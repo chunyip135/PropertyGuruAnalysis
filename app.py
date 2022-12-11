@@ -122,7 +122,7 @@ def make_prediction():
     return output
 
 
-def load_dataset(filename: str = 'clean_data.csv') -> pd.DataFrame:
+def load_dataset(filename: str = 'clean_data_v2.csv') -> pd.DataFrame:
     if filename not in os.listdir():
         raise FileNotFoundError(f'Datafile {filename} is not found. ')
         return None
