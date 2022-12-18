@@ -4,27 +4,25 @@ import glob
 from joblib import dump, load
 import pandas as pd
 import os
+from scipy.special import boxcox1p
+from sklearn.preprocessing import OrdinalEncoder
+from scipy.stats import boxcox
 
 
 def load_model():
-    pattern = 'rf_pipeline*.joblib'
+    """Load the pre-trained model into memory."""
+    pattern = 'models/rf_no_scale.joblib'
     filenames = glob.glob(pattern)
     filenames = sorted(filenames)
+    print(filenames)
     model = load(filenames[-1])
     return model
 
 
-def OrdinalEncoder():
-    encoded_cat = {}
-    obj_cat = ['listing_tags', 'furnishing', 'tenure', 'district', 'landed_vs_high_rise', 'pool', 'fitness', 'balcony']
-
-    for obj in obj_cat:
-        json_out = {}
-        for i, val in enumerate(sorted(df[obj].unique().tolist())):
-            json_out[val] = i
-        encoded_cat[obj] = json_out
-
-    return encoded_cat
+def encoder(cols, df):
+    enc = OrdinalEncoder()
+    enc.fit(df[cols])
+    return enc
 
 
 def format_prediction(val: str) -> str:
@@ -42,9 +40,10 @@ def format_prediction(val: str) -> str:
 
     return val
 
+
 def imposed_constriant(df: pd.DataFrame):
-    high_rise_tag = df[df.landed_vs_high_rise == 'high-rise']['listing_tags'].unique().tolist()
-    landed_tag = df[df.landed_vs_high_rise == 'landed']['listing_tags'].unique().tolist()
+    high_rise_tag = df[df.landed_high_rise == 'high-rise']['listing_tags'].unique().tolist()
+    landed_tag = df[df.landed_high_rise == 'landed']['listing_tags'].unique().tolist()
     output = None
     tag = None
     if (property_type_selected in high_rise_tag) & (landed_high_rise_selected == 'landed'):
@@ -58,12 +57,12 @@ def imposed_constriant(df: pd.DataFrame):
     return output, tag
 
 
-
-def preprocess_prediction():
+def preprocess_prediction(df: pd.DataFrame):
+    # Inputs
     prediction = np.array([sqft_selected, num_bedrooms_selected, num_bathrooms_selected,
-                          property_type_selected, furnishing_selected, tenure_selected,
-                          district_choice_selected, landed_high_rise_selected,
-                          pool_selected, gym_selected, balcony_selected])
+                           property_type_selected, tenure_selected,
+                           district_choice_selected, landed_high_rise_selected,
+                           pool_selected, gym_selected, balcony_selected])
 
     prediction = prediction.reshape(1, -1)
 
@@ -71,10 +70,9 @@ def preprocess_prediction():
                'bedrooms',
                'bathrooms',
                'listing_tags',
-               'furnishing',
                'tenure',
-               'district',
-               'landed_vs_high_rise',
+               'district_enc',
+               'landed_high_rise',
                'pool',
                'fitness',
                'balcony']
@@ -86,24 +84,36 @@ def preprocess_prediction():
     bool_map = {'Yes': True, 'No': False}
 
     prediction_df['sqft'] = prediction_df['sqft'].astype('float64')
+
+    lamhat = boxcox(df['sqft'])[1]
+    
+    prediction_df['sqft_boxcox'] = boxcox1p(prediction_df['sqft'], lamhat)
+
+    prediction_df = prediction_df.drop(columns='sqft')
+
     prediction_df['bedrooms'] = prediction_df['bedrooms'].astype('float64')
     prediction_df['bathrooms'] = prediction_df['bathrooms'].astype('float64')
     prediction_df['pool'] = prediction_df['pool'].map(bool_map).astype('bool')
     prediction_df['fitness'] = prediction_df['fitness'].map(bool_map).astype('bool')
     prediction_df['balcony'] = prediction_df['balcony'].map(bool_map).astype('bool')
 
-    encoded_cat = OrdinalEncoder()
-    for col in ['listing_tags', 'furnishing', 'tenure', 'district', 'landed_vs_high_rise', 'pool', 'fitness',
-                'balcony']:
-        prediction_df[col] = prediction_df[col].map(encoded_cat[col])
+    enc_cols = ['listing_tags', 'tenure', 'pool', 'fitness', 'balcony', 'landed_high_rise', 'district_enc']
 
+    enc = encoder(enc_cols, df)
+    prediction_df[enc_cols] = enc.transform(prediction_df[enc_cols])
+
+    cols_order = ['bedrooms', 'bathrooms', 'listing_tags', 'tenure', 'pool', 'fitness', 'balcony', 'sqft_boxcox',
+                  'landed_high_rise', 'district_enc']
+
+    prediction_df = prediction_df[cols_order]
     return prediction_df, raw_prediction_df
 
-def make_prediction():
 
-    prediction_df, raw_prediction_df = preprocess_prediction()
+def make_prediction(df: pd.DataFrame) -> float:
+    prediction_df, raw_prediction_df = preprocess_prediction(df)
 
-    st.dataframe(raw_prediction_df, use_container_width = True)
+    st.dataframe(raw_prediction_df, use_container_width=True)
+    st.dataframe(prediction_df, use_container_width=True)
 
     model = load_model()
 
@@ -122,15 +132,16 @@ def make_prediction():
     return output
 
 
-def load_dataset(filename: str = 'clean_data_v2.csv') -> pd.DataFrame:
-    if filename not in os.listdir():
-        raise FileNotFoundError(f'Datafile {filename} is not found. ')
-        return None
-    else:
+def load_dataset(filename: str = 'data/Cleaned_data_for_modelling.csv') -> pd.DataFrame:
+    try:
         df = pd.read_csv(filename)
         return df
+    except:
+        raise FileNotFoundError(f'Datafile {filename} is not found. ')
+        return None
 
 
+### Start of Application ###
 df = load_dataset()
 
 st.title('PropertyGuru Sales Property Prediction')
@@ -141,7 +152,7 @@ property_type_selected = st.sidebar.selectbox(label='What type of property are y
                                               options=property_type_options)
 
 sqft_selected = st.sidebar.slider(label='Decide the squared feet of your property: ',
-                                  min_value=50, max_value=25000, value=500, step=50)
+                                  min_value=50, max_value=15000, value=500, step=50)
 
 num_bedrooms_selected = st.sidebar.slider(label='Decide the number of bedrooms of your property: ',
                                           min_value=0, max_value=10, value=1, step=1)
@@ -152,7 +163,7 @@ num_bathrooms_selected = st.sidebar.slider(label='Decide the number of bathrooms
 landed_high_rise_selected = st.sidebar.selectbox(label='Do you want landed or high-rise property?',
                                                  options=['landed', 'high-rise'])
 
-district_options = df['district'].unique().tolist()
+district_options = df['district_enc'].unique().tolist()
 
 district_choice_selected = st.sidebar.selectbox(label='Which district do you prefer to purchase the property?',
                                                 options=district_options)
@@ -160,10 +171,6 @@ district_choice_selected = st.sidebar.selectbox(label='Which district do you pre
 tenure_options = df['tenure'].unique().tolist()
 tenure_selected = st.sidebar.selectbox(label='What type of property tenure are you look for?',
                                        options=tenure_options)
-
-furnishing_options = df['furnishing'].unique().tolist()
-furnishing_selected = st.sidebar.selectbox(label='What type of furnishing are you look for?',
-                                           options=furnishing_options)
 
 pool_selected = st.sidebar.radio(label='Do you want to have swimming pool?',
                                  options=['Yes', 'No'], index=0)
@@ -174,8 +181,7 @@ gym_selected = st.sidebar.radio(label='Do you want to have fitness facilities su
 balcony_selected = st.sidebar.radio(label='Do you want to have balcony?',
                                     options=['Yes', 'No'], index=0)
 
-
-predicted_price = str(int(make_prediction()))
+predicted_price = str(int(make_prediction(df)))
 
 predicted_price = format_prediction(predicted_price)
 
